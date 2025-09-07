@@ -26,6 +26,11 @@ export interface SandboxConfig {
   remoteBranch?: string;
   prNumber?: string;
   dockerSocketPath?: string;
+  // Network configuration options
+  networkMode?: string; // e.g., "bridge", "none", "host", or custom network name
+  networkName?: string; // Use existing custom network by name
+  dnsServers?: string[]; // Custom DNS servers for the container
+  extraHosts?: Record<string, string>; // Additional host mappings
 }
 
 export interface Credentials {

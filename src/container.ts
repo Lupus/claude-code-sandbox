@@ -17,6 +17,11 @@ export class ContainerManager {
     // Build or pull image
     await this.ensureImage();
 
+    // Connect to custom network if specified
+    if (this.config.networkName) {
+      await this.ensureCustomNetwork(this.config.networkName);
+    }
+
     // Create container
     const container = await this.createContainer(containerConfig);
     this.containers.set(container.id, container);
@@ -61,6 +66,26 @@ export class ContainerManager {
     await this.runSetupCommands(container);
 
     return container.id;
+  }
+
+  private async ensureCustomNetwork(networkName: string): Promise<void> {
+    try {
+      // Check if network exists
+      const network = this.docker.getNetwork(networkName);
+      await network.inspect();
+      console.log(chalk.green(`✓ Using existing network: ${networkName}`));
+    } catch (error: any) {
+      if (error.statusCode === 404) {
+        console.error(chalk.red(`✗ Network '${networkName}' not found.`));
+        console.error(chalk.red(`Please create the network first with:`));
+        console.error(chalk.yellow(`  docker network create ${networkName}`));
+        console.error(chalk.red(`Or for isolation with specific rules:`));
+        console.error(chalk.yellow(`  docker network create --internal ${networkName}  # No external access`));
+        throw new Error(`Required network '${networkName}' does not exist. Refusing to start container with unintended network configuration.`);
+      } else {
+        throw error;
+      }
+    }
   }
 
   private async ensureImage(): Promise<void> {
@@ -245,6 +270,25 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
     // Prepare volumes
     const volumes = this.prepareVolumes(workDir, credentials);
 
+    // Prepare network configuration
+    const hostConfig: any = {
+      Binds: volumes,
+      AutoRemove: false,
+      NetworkMode: this.config.networkName || this.config.networkMode || "bridge",
+    };
+
+    // Add DNS servers if specified
+    if (this.config.dnsServers && this.config.dnsServers.length > 0) {
+      hostConfig.Dns = this.config.dnsServers;
+    }
+
+    // Add extra hosts if specified
+    if (this.config.extraHosts) {
+      hostConfig.ExtraHosts = Object.entries(this.config.extraHosts).map(
+        ([hostname, ip]) => `${hostname}:${ip}`
+      );
+    }
+
     // Create container
     const container = await this.docker.createContainer({
       Image: this.config.dockerImage || "claude-code-sandbox:latest",
@@ -252,11 +296,7 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
         this.config.containerPrefix || "claude-code-sandbox"
       }-${Date.now()}`,
       Env: env,
-      HostConfig: {
-        Binds: volumes,
-        AutoRemove: false,
-        NetworkMode: "bridge",
-      },
+      HostConfig: hostConfig,
       WorkingDir: "/workspace",
       Cmd: ["/bin/bash", "-l"],
       AttachStdin: true,
