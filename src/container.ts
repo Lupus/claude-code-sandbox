@@ -311,7 +311,19 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
   }
 
   private prepareEnvironment(credentials: Credentials): string[] {
-    const env = [];
+    const env: string[] = [];
+
+    // Helper function to check if a variable is already set
+    const isEnvVarSet = (key: string): boolean => {
+      return env.some(envVar => envVar.startsWith(`${key}=`));
+    };
+
+    // Helper function to safely add environment variable (only if not already set)
+    const addEnvVar = (key: string, value: string): void => {
+      if (!isEnvVarSet(key)) {
+        env.push(`${key}=${value}`);
+      }
+    };
 
     // Load environment variables from .env file if specified
     if (this.config.envFile) {
@@ -381,57 +393,57 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
       }
     }
 
-    // Claude credentials from discovery
+    // Claude credentials from discovery (respects .env file precedence)
     if (credentials.claude) {
       switch (credentials.claude.type) {
         case "api_key":
-          env.push(`ANTHROPIC_API_KEY=${credentials.claude.value}`);
+          addEnvVar("ANTHROPIC_API_KEY", credentials.claude.value);
           break;
         case "bedrock":
-          env.push("CLAUDE_CODE_USE_BEDROCK=1");
+          addEnvVar("CLAUDE_CODE_USE_BEDROCK", "1");
           if (credentials.claude.region) {
-            env.push(`AWS_REGION=${credentials.claude.region}`);
+            addEnvVar("AWS_REGION", credentials.claude.region);
           }
           break;
         case "vertex":
-          env.push("CLAUDE_CODE_USE_VERTEX=1");
+          addEnvVar("CLAUDE_CODE_USE_VERTEX", "1");
           if (credentials.claude.project) {
-            env.push(`GOOGLE_CLOUD_PROJECT=${credentials.claude.project}`);
+            addEnvVar("GOOGLE_CLOUD_PROJECT", credentials.claude.project);
           }
           break;
       }
     } else if (process.env.ANTHROPIC_API_KEY) {
       // If no Claude credentials were discovered but ANTHROPIC_API_KEY is in environment, pass it through
-      env.push(`ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY}`);
+      addEnvVar("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY);
     }
 
-    // GitHub token - check multiple sources
+    // GitHub token - check multiple sources with proper precedence (.env file takes priority)
     if (credentials.github?.token) {
-      env.push(`GITHUB_TOKEN=${credentials.github.token}`);
+      addEnvVar("GITHUB_TOKEN", credentials.github.token);
     } else if (process.env.GITHUB_TOKEN) {
       // Pass through from environment
-      env.push(`GITHUB_TOKEN=${process.env.GITHUB_TOKEN}`);
+      addEnvVar("GITHUB_TOKEN", process.env.GITHUB_TOKEN);
     } else if (process.env.GH_TOKEN) {
       // GitHub CLI uses GH_TOKEN
-      env.push(`GITHUB_TOKEN=${process.env.GH_TOKEN}`);
-      env.push(`GH_TOKEN=${process.env.GH_TOKEN}`);
+      addEnvVar("GITHUB_TOKEN", process.env.GH_TOKEN);
+      addEnvVar("GH_TOKEN", process.env.GH_TOKEN);
     }
 
-    // Pass through git author info if available
+    // Pass through git author info if available (respects .env file precedence)
     if (process.env.GIT_AUTHOR_NAME) {
-      env.push(`GIT_AUTHOR_NAME=${process.env.GIT_AUTHOR_NAME}`);
+      addEnvVar("GIT_AUTHOR_NAME", process.env.GIT_AUTHOR_NAME);
     }
     if (process.env.GIT_AUTHOR_EMAIL) {
-      env.push(`GIT_AUTHOR_EMAIL=${process.env.GIT_AUTHOR_EMAIL}`);
+      addEnvVar("GIT_AUTHOR_EMAIL", process.env.GIT_AUTHOR_EMAIL);
     }
     if (process.env.GIT_COMMITTER_NAME) {
-      env.push(`GIT_COMMITTER_NAME=${process.env.GIT_COMMITTER_NAME}`);
+      addEnvVar("GIT_COMMITTER_NAME", process.env.GIT_COMMITTER_NAME);
     }
     if (process.env.GIT_COMMITTER_EMAIL) {
-      env.push(`GIT_COMMITTER_EMAIL=${process.env.GIT_COMMITTER_EMAIL}`);
+      addEnvVar("GIT_COMMITTER_EMAIL", process.env.GIT_COMMITTER_EMAIL);
     }
 
-    // Additional config
+    // Additional config (these always get set)
     env.push("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1");
     if (this.config.maxThinkingTokens) {
       env.push(`MAX_THINKING_TOKENS=${this.config.maxThinkingTokens}`);
@@ -440,9 +452,14 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
       env.push(`BASH_MAX_TIMEOUT_MS=${this.config.bashTimeout}`);
     }
 
-    // Add custom environment variables
+    // Add custom environment variables (these override everything, including .env file)
     if (this.config.environment) {
       Object.entries(this.config.environment).forEach(([key, value]) => {
+        // Remove any existing variable with this key first
+        const existingIndex = env.findIndex(envVar => envVar.startsWith(`${key}=`));
+        if (existingIndex !== -1) {
+          env.splice(existingIndex, 1);
+        }
         env.push(`${key}=${value}`);
       });
     }
