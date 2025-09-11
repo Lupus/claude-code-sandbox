@@ -40,7 +40,7 @@ export class ContainerManager {
       await this._copyClaudeConfig(container);
 
       // Copy git configuration if it exists
-      await this._copyGitConfig(container);
+      await this._copyGitConfig(container, containerConfig.workDir);
     } catch (error) {
       console.error(chalk.red("✗ File copy failed:"), error);
       // Clean up container on failure
@@ -869,23 +869,98 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
     }
   }
 
-  private async _copyGitConfig(container: Docker.Container): Promise<void> {
+  private _extractLocalGitConfig(workDir: string): { name?: string; email?: string } | null {
+    const fs = require("fs");
+    const path = require("path");
+
+    const localConfigPath = path.join(workDir, ".git", "config");
+    
+    try {
+      if (!fs.existsSync(localConfigPath)) {
+        return null;
+      }
+
+      const configContent = fs.readFileSync(localConfigPath, "utf-8");
+      const lines = configContent.split("\n");
+      
+      let inUserSection = false;
+      let name: string | undefined;
+      let email: string | undefined;
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        
+        if (trimmed === "[user]") {
+          inUserSection = true;
+          continue;
+        }
+        
+        if (trimmed.startsWith("[") && trimmed !== "[user]") {
+          inUserSection = false;
+          continue;
+        }
+        
+        if (inUserSection) {
+          if (trimmed.startsWith("name = ")) {
+            name = trimmed.substring(7).trim();
+          } else if (trimmed.startsWith("email = ")) {
+            email = trimmed.substring(8).trim();
+          }
+        }
+      }
+      
+      // Only return config if both name and email are present
+      if (name && email) {
+        return { name, email };
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  private async _copyGitConfig(container: Docker.Container, workDir?: string): Promise<void> {
     const fs = require("fs");
     const os = require("os");
     const path = require("path");
 
-    const gitConfigPath = path.join(os.homedir(), ".gitconfig");
+    // First, try to get local git config from the repository
+    let gitConfig: { name?: string; email?: string } | null = null;
+    let configSource = "";
+    
+    if (workDir) {
+      gitConfig = this._extractLocalGitConfig(workDir);
+      if (gitConfig) {
+        configSource = "local repository";
+        console.log(chalk.blue("• Using local git configuration from repository..."));
+      }
+    }
+    
+    // Fall back to global config if no local config
+    const globalConfigPath = path.join(os.homedir(), ".gitconfig");
+    let globalConfigContent = "";
+    
+    if (!gitConfig && fs.existsSync(globalConfigPath)) {
+      configSource = "global";
+      globalConfigContent = fs.readFileSync(globalConfigPath, "utf-8");
+      console.log(chalk.blue("• Copying global git configuration..."));
+    } else if (!gitConfig) {
+      return; // No git config to copy
+    }
 
     try {
-      // Check if the git config file exists
-      if (!fs.existsSync(gitConfigPath)) {
-        return; // No git config to copy
+      let finalConfigContent = "";
+      
+      if (gitConfig) {
+        // Create a minimal config with just the identity from local repo
+        finalConfigContent = `[user]
+\tname = ${gitConfig.name}
+\temail = ${gitConfig.email}
+`;
+      } else {
+        finalConfigContent = globalConfigContent;
       }
-
-      console.log(chalk.blue("• Copying git configuration..."));
-
-      // Read the git config file
-      const configContent = fs.readFileSync(gitConfigPath, "utf-8");
 
       // Create a temporary tar file with the git config
       const tarFile = `/tmp/git-config-${Date.now()}.tar`;
@@ -895,7 +970,7 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
       // Add the .gitconfig file to the tar
       pack.entry(
         { name: ".gitconfig", mode: 0o644 },
-        configContent,
+        finalConfigContent,
         (err: any) => {
           if (err) throw err;
           pack.finalize();
@@ -936,7 +1011,7 @@ exec claude --dangerously-skip-permissions' > /start-claude.sh && \\
 
       await fixPermsExec.start({});
 
-      console.log(chalk.green("✓ Git configuration copied successfully"));
+      console.log(chalk.green(`✓ Git configuration copied successfully (${configSource})`));
     } catch (error) {
       console.error(
         chalk.yellow("⚠ Failed to copy git configuration:"),
